@@ -41,8 +41,7 @@ Aplikasi **manajemen tugas harian** dengan tampilan modern, ringan, dan berjalan
 ## 🧩 Teknologi yang Digunakan
 
 * **Framework:** Flutter (Dart)
-* **Local Storage:** SharedPreferences / Hive / SQLite
-* **State Management:** Provider
+* **Local Storage:** SharedPreferences
 * **Date Formatting:** Intl
 * **Notifications:** flutter_local_notifications
 * **UI Framework:** Material Design
