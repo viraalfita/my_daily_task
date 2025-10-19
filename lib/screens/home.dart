@@ -52,6 +52,13 @@ class HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
     loadTasks();
     _fadeController.forward();
 
+    // Jadwalkan notifikasi setelah delay singkat
+    Future.delayed(const Duration(seconds: 2), () {
+      if (mounted) {
+        _scheduleNotificationsForPendingTasks();
+      }
+    });
+
     Future.delayed(const Duration(milliseconds: 500), () {
       if (mounted) {
         _scaleController.forward();
@@ -94,6 +101,11 @@ class HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
     showAnimatedTopSnackbar("Task reminder: $payload");
   }
 
+  Future<List<PendingNotificationRequest>> _getScheduledNotifications() async {
+    return await flutterLocalNotificationsPlugin.pendingNotificationRequests();
+  }
+
+  // Schedule notification for a task
   // Schedule notification for a task
   Future<void> _scheduleTaskNotification(
     String taskId,
@@ -131,11 +143,14 @@ class HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
           tz.local,
         );
 
+        // Cancel existing notification first to avoid duplicates
+        await _cancelTaskNotification(taskId);
+
         await flutterLocalNotificationsPlugin.zonedSchedule(
-          taskId.hashCode, // id unik
-          '⏰ Task Reminder', // title
-          'Your task "$taskTitle" was due 5 minutes ago!', // body
-          scheduledDate, // tz.TZDateTime
+          taskId.hashCode,
+          '⏰ Task Reminder',
+          'Your task "$taskTitle" was due!',
+          scheduledDate,
           const NotificationDetails(
             android: AndroidNotificationDetails(
               'task_reminder_channel',
@@ -158,7 +173,9 @@ class HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
           payload: taskTitle,
         );
       }
-    } catch (e) {}
+    } catch (e) {
+      // Handle any exceptions
+    }
   }
 
   // Cancel notification for a task
@@ -167,22 +184,34 @@ class HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
   }
 
   // Check and schedule notifications for pending tasks
-  void _scheduleNotificationsForPendingTasks() {
+  // Check and schedule notifications for pending tasks
+  Future<void> _scheduleNotificationsForPendingTasks() async {
+    // Dapatkan notifikasi yang sudah dijadwalkan
+    final scheduledNotifications = await _getScheduledNotifications();
+    final scheduledIds = scheduledNotifications.map((n) => n.id).toSet();
+
     final pendingTasks = tasks
         .where((task) => task['status'] == 'pending')
         .toList();
 
     for (final task in pendingTasks) {
       try {
-        final taskDate = DateTime.parse(task['date']);
-        _scheduleTaskNotification(
-          task['_id'],
-          task['title'],
-          task['time'],
-          taskDate,
-        );
+        final taskId = task['_id'];
+        final taskHashCode = taskId.hashCode;
+
+        final alreadyScheduled = scheduledIds.contains(taskHashCode);
+
+        if (!alreadyScheduled) {
+          final taskDate = DateTime.parse(task['date']);
+          await _scheduleTaskNotification(
+            taskId,
+            task['title'],
+            task['time'],
+            taskDate,
+          );
+        }
       } catch (e) {
-        print('❌ Error scheduling notification for task ${task['title']}: $e');
+        print('Error scheduling notification: $e');
       }
     }
   }
@@ -409,9 +438,6 @@ class HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
     setState(() {
       tasks = data;
     });
-
-    // Schedule notifications for pending tasks
-    _scheduleNotificationsForPendingTasks();
   }
 
   void showAnimatedTopSnackbar(String message) {
@@ -758,7 +784,6 @@ class HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
   }
 
   void deleteTask(String id) async {
-    // Cancel notification before deleting task
     await _cancelTaskNotification(id);
 
     await api.deleteTask(id);
@@ -774,11 +799,9 @@ class HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
   ) async {
     String newStatus = status == "done" ? "pending" : "done";
 
-    // Cancel notification if task is marked as done
     if (newStatus == "done") {
       await _cancelTaskNotification(id);
     } else {
-      // Reschedule notification if task is marked as pending again
       final taskDate = DateTime.parse(
         tasks.firstWhere((task) => task['_id'] == id)['date'],
       );
@@ -1138,32 +1161,40 @@ class HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
                             Icons.notifications_none,
                             color: Colors.grey[600],
                           ),
-                          onPressed: () {
-                            _showNotificationSettings();
-                          },
+                          onPressed: _showNotificationSettings,
                         ),
                       ),
-                      // Badge for pending notifications
-                      if (getPendingTasksCount() > 0)
-                        Positioned(
-                          right: 0,
-                          top: 0,
-                          child: Container(
-                            padding: const EdgeInsets.all(4),
-                            decoration: const BoxDecoration(
-                              color: Colors.red,
-                              shape: BoxShape.circle,
-                            ),
-                            child: Text(
-                              getPendingTasksCount().toString(),
-                              style: const TextStyle(
-                                color: Colors.white,
-                                fontSize: 10,
-                                fontWeight: FontWeight.bold,
+                      // Badge untuk scheduled notifications
+                      FutureBuilder<List<PendingNotificationRequest>>(
+                        future: _getScheduledNotifications(),
+                        builder: (context, snapshot) {
+                          final count = snapshot.hasData
+                              ? snapshot.data!.length
+                              : 0;
+                          if (count > 0) {
+                            return Positioned(
+                              right: 0,
+                              top: 0,
+                              child: Container(
+                                padding: const EdgeInsets.all(4),
+                                decoration: const BoxDecoration(
+                                  color: Colors.red,
+                                  shape: BoxShape.circle,
+                                ),
+                                child: Text(
+                                  count.toString(),
+                                  style: const TextStyle(
+                                    color: Colors.white,
+                                    fontSize: 10,
+                                    fontWeight: FontWeight.bold,
+                                  ),
+                                ),
                               ),
-                            ),
-                          ),
-                        ),
+                            );
+                          }
+                          return const SizedBox();
+                        },
+                      ),
                     ],
                   ),
                 ],
@@ -1639,9 +1670,10 @@ class HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
   void _showNotificationSettings() {
     showModalBottomSheet(
       context: context,
+      isScrollControlled: true,
       backgroundColor: Colors.transparent,
       builder: (_) => Container(
-        height: 320,
+        height: MediaQuery.of(context).size.height * 0.7,
         decoration: const BoxDecoration(
           color: Colors.white,
           borderRadius: BorderRadius.only(
@@ -1666,31 +1698,195 @@ class HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
                 ),
               ),
               const SizedBox(height: 20),
-              const Text(
-                "Notification Settings",
-                style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
-              ),
-              const SizedBox(height: 16),
-              Text(
-                "You have ${getPendingTasksCount()} pending tasks with reminders", // PERBAIKAN: panggil fungsi dengan benar
-                style: TextStyle(fontSize: 14, color: Colors.grey[600]),
-              ),
-              const SizedBox(height: 20),
-              Expanded(
-                child: ListView(
-                  shrinkWrap: true,
-                  children: [
-                    ListTile(
-                      leading: Icon(Icons.clear_all, color: Colors.red),
-                      title: const Text("Clear All Notifications"),
-                      subtitle: const Text("Cancel all scheduled reminders"),
-                      onTap: () {
-                        _cancelAllNotifications();
-                        Navigator.pop(context);
-                        showAnimatedTopSnackbar("All notifications cleared");
+
+              Row(
+                children: [
+                  Text(
+                    "Scheduled Reminders",
+                    style: TextStyle(
+                      fontSize: 20,
+                      fontWeight: FontWeight.w600,
+                      color: Colors.grey[800],
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Container(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 8,
+                      vertical: 2,
+                    ),
+                    decoration: BoxDecoration(
+                      color: Colors.amber[100],
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: FutureBuilder<List<PendingNotificationRequest>>(
+                      future: _getScheduledNotifications(),
+                      builder: (context, snapshot) {
+                        if (snapshot.hasData) {
+                          return Text(
+                            "${snapshot.data!.length}",
+                            style: TextStyle(
+                              fontSize: 12,
+                              fontWeight: FontWeight.w600,
+                              color: Colors.amber[800],
+                            ),
+                          );
+                        }
+                        return Text(
+                          "0",
+                          style: TextStyle(
+                            fontSize: 12,
+                            fontWeight: FontWeight.w600,
+                            color: Colors.amber[800],
+                          ),
+                        );
                       },
                     ),
-                  ],
+                  ),
+                ],
+              ),
+              const SizedBox(height: 16),
+
+              // Daftar notifikasi yang dijadwalkan
+              Expanded(
+                child: FutureBuilder<List<PendingNotificationRequest>>(
+                  future: _getScheduledNotifications(),
+                  builder: (context, snapshot) {
+                    if (snapshot.connectionState == ConnectionState.waiting) {
+                      return Center(
+                        child: CircularProgressIndicator(color: Colors.amber),
+                      );
+                    }
+
+                    if (!snapshot.hasData || snapshot.data!.isEmpty) {
+                      return Center(
+                        child: Column(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            Icon(
+                              Icons.notifications_off,
+                              size: 48,
+                              color: Colors.grey[300],
+                            ),
+                            const SizedBox(height: 16),
+                            Text(
+                              "No scheduled notifications",
+                              style: TextStyle(color: Colors.grey[500]),
+                            ),
+                          ],
+                        ),
+                      );
+                    }
+
+                    final notifications = snapshot.data!;
+
+                    return ListView.builder(
+                      itemCount: notifications.length,
+                      itemBuilder: (context, index) {
+                        final notification = notifications[index];
+
+                        return Container(
+                          margin: const EdgeInsets.only(bottom: 8),
+                          padding: const EdgeInsets.all(12),
+                          decoration: BoxDecoration(
+                            color: Colors.grey[50],
+                            borderRadius: BorderRadius.circular(12),
+                            border: Border.all(color: Colors.grey[200]!),
+                          ),
+                          child: Row(
+                            children: [
+                              Container(
+                                width: 36,
+                                height: 36,
+                                decoration: BoxDecoration(
+                                  color: Colors.amber[100],
+                                  shape: BoxShape.circle,
+                                ),
+                                child: Icon(
+                                  Icons.notifications_active,
+                                  size: 18,
+                                  color: Colors.amber[600],
+                                ),
+                              ),
+                              const SizedBox(width: 12),
+                              Expanded(
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Text(
+                                      notification.title ?? "Task Reminder",
+                                      style: const TextStyle(
+                                        fontWeight: FontWeight.w600,
+                                        fontSize: 14,
+                                      ),
+                                    ),
+                                    const SizedBox(height: 2),
+                                    Text(
+                                      notification.body ?? "Reminder",
+                                      style: TextStyle(
+                                        fontSize: 12,
+                                        color: Colors.grey[600],
+                                      ),
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                    ),
+                                  ],
+                                ),
+                              ),
+                              IconButton(
+                                onPressed: () async {
+                                  await flutterLocalNotificationsPlugin.cancel(
+                                    notification.id,
+                                  );
+                                  if (mounted) {
+                                    setState(() {});
+                                    showAnimatedTopSnackbar(
+                                      "Notification cancelled",
+                                    );
+                                  }
+                                },
+                                icon: Icon(
+                                  Icons.cancel,
+                                  size: 18,
+                                  color: Colors.red[400],
+                                ),
+                              ),
+                            ],
+                          ),
+                        );
+                      },
+                    );
+                  },
+                ),
+              ),
+
+              const SizedBox(height: 16),
+
+              // Tombol Clear All
+              SizedBox(
+                width: double.infinity,
+                child: OutlinedButton(
+                  onPressed: () {
+                    _cancelAllNotifications();
+                    Navigator.pop(context);
+                    showAnimatedTopSnackbar("All notifications cleared");
+                  },
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: Colors.red,
+                    side: BorderSide(color: Colors.red[300]!),
+                    padding: const EdgeInsets.symmetric(vertical: 16),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                  ),
+                  child: const Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Icon(Icons.clear_all, size: 18),
+                      SizedBox(width: 8),
+                      Text("Clear All Notifications"),
+                    ],
+                  ),
                 ),
               ),
             ],
